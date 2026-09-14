@@ -1,0 +1,19 @@
+[project]
+name = "npl-portfolio-data-platform"
+version = "0.1.0"
+description = "Data engineering and machine learning platform for NPL portfolio processing, recovery prediction, financial valuation, and risk analysis."
+requires-python = ">=3.11"
+
+dependencies = [
+    "kaggle>=1.8.0",
+    "pandas>=2.0",
+    "numpy>=1.24",
+    "pyyaml>=6.0",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
