@@ -6,8 +6,10 @@ import pandas as pd
 
 class BatchCSVReader:
     """
-    Lee archivos CSV por lotes y detecta su codificación
-    antes de iniciar el procesamiento.
+    Lee archivos CSV por lotes.
+
+    Permite seleccionar únicamente las columnas necesarias
+    para reducir memoria e I/O.
     """
 
     ENCODINGS = (
@@ -30,11 +32,19 @@ class BatchCSVReader:
     def read(
         self,
         file_path: Path,
+        usecols: list[str] | None = None,
     ) -> tuple[Iterator[pd.DataFrame], str]:
         """
-        Detecta el encoding y devuelve un iterador de DataFrames.
+        Devuelve un iterador de DataFrames.
 
-        El CSV nunca se carga completamente en memoria.
+        Parameters
+        ----------
+        file_path:
+            Archivo CSV que será procesado.
+
+        usecols:
+            Columnas específicas que se desean leer.
+            Si es None, se leen todas las columnas.
         """
 
         self._validate_file(file_path)
@@ -46,6 +56,7 @@ class BatchCSVReader:
             encoding=encoding,
             chunksize=self.chunk_size,
             low_memory=False,
+            usecols=usecols,
         )
 
         return iterator, encoding
@@ -54,13 +65,6 @@ class BatchCSVReader:
         self,
         file_path: Path,
     ) -> str:
-        """
-        Detecta la codificación leyendo una muestra binaria
-        mucho mayor que unas pocas filas.
-
-        Para archivos menores a 1 MB analiza el archivo completo.
-        """
-
         with file_path.open("rb") as file:
             sample = file.read(self.ENCODING_SAMPLE_SIZE)
 
