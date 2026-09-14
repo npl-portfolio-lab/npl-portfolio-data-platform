@@ -89,10 +89,12 @@ class ValueQualityEngine:
             }
 
         chunks_processed = 0
+        rows_processed = 0
 
         for batch in batches:
 
             chunks_processed += 1
+            rows_processed += len(batch)
 
             for rule in rules:
 
@@ -128,7 +130,7 @@ class ValueQualityEngine:
                     f"  Chunk "
                     f"{chunks_processed:>3} | "
                     f"Filas acumuladas: "
-                    f"{chunks_processed * self.reader.chunk_size:,}"
+                    f"{rows_processed:,}"
                 )
 
             del batch
