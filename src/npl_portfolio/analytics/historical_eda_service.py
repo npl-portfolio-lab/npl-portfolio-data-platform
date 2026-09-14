@@ -446,3 +446,253 @@ class HistoricalEDAService:
             "aggregated_features": (feature_columns),
             "target_statistics": (target_results),
         }
+
+    def get_previous_application_target_analysis(
+        self,
+        application_path: Path,
+        target_column: str = "TARGET",
+    ) -> dict[str, Any]:
+        """
+        Agrega previous_application por cliente y compara
+        las características históricas entre TARGET=0 y TARGET=1.
+
+        La unidad final de análisis es SK_ID_CURR.
+        """
+
+        if not application_path.exists():
+            raise FileNotFoundError(f"No existe el archivo: {application_path}")
+
+        previous_columns = [
+            "SK_ID_CURR",
+            "NAME_CONTRACT_STATUS",
+            "AMT_APPLICATION",
+            "AMT_CREDIT",
+            "AMT_ANNUITY",
+            "CNT_PAYMENT",
+            "DAYS_DECISION",
+        ]
+
+        previous = pd.read_parquet(
+            self.parquet_path,
+            columns=previous_columns,
+        )
+
+        application = pd.read_parquet(
+            application_path,
+            columns=[
+                "SK_ID_CURR",
+                target_column,
+            ],
+        )
+
+        # -------------------------------------------------
+        # Indicadores de estado
+        # -------------------------------------------------
+
+        previous["IS_APPROVED"] = (
+            previous["NAME_CONTRACT_STATUS"].eq("Approved").astype("int8")
+        )
+
+        previous["IS_REFUSED"] = (
+            previous["NAME_CONTRACT_STATUS"].eq("Refused").astype("int8")
+        )
+
+        previous["IS_CANCELED"] = (
+            previous["NAME_CONTRACT_STATUS"].eq("Canceled").astype("int8")
+        )
+
+        previous["IS_UNUSED"] = (
+            previous["NAME_CONTRACT_STATUS"].eq("Unused offer").astype("int8")
+        )
+
+        # Diferencia entre lo solicitado y lo concedido.
+        previous["CREDIT_DIFFERENCE"] = (
+            previous["AMT_APPLICATION"] - previous["AMT_CREDIT"]
+        )
+
+        # -------------------------------------------------
+        # Agregación por cliente
+        # -------------------------------------------------
+
+        previous_aggregated = previous.groupby(
+            "SK_ID_CURR",
+            as_index=False,
+        ).agg(
+            PREV_APPLICATION_COUNT=(
+                "SK_ID_CURR",
+                "size",
+            ),
+            PREV_APPROVED_COUNT=(
+                "IS_APPROVED",
+                "sum",
+            ),
+            PREV_REFUSED_COUNT=(
+                "IS_REFUSED",
+                "sum",
+            ),
+            PREV_CANCELED_COUNT=(
+                "IS_CANCELED",
+                "sum",
+            ),
+            PREV_UNUSED_COUNT=(
+                "IS_UNUSED",
+                "sum",
+            ),
+            PREV_AVG_APPLICATION_AMOUNT=(
+                "AMT_APPLICATION",
+                "mean",
+            ),
+            PREV_AVG_CREDIT_AMOUNT=(
+                "AMT_CREDIT",
+                "mean",
+            ),
+            PREV_TOTAL_APPLICATION_AMOUNT=(
+                "AMT_APPLICATION",
+                "sum",
+            ),
+            PREV_TOTAL_CREDIT_AMOUNT=(
+                "AMT_CREDIT",
+                "sum",
+            ),
+            PREV_AVG_ANNUITY=(
+                "AMT_ANNUITY",
+                "mean",
+            ),
+            PREV_AVG_PAYMENT_COUNT=(
+                "CNT_PAYMENT",
+                "mean",
+            ),
+            PREV_AVG_CREDIT_DIFFERENCE=(
+                "CREDIT_DIFFERENCE",
+                "mean",
+            ),
+            PREV_AVG_DAYS_DECISION=(
+                "DAYS_DECISION",
+                "mean",
+            ),
+            PREV_LAST_DECISION_DAYS=(
+                "DAYS_DECISION",
+                "max",
+            ),
+        )
+
+        # -------------------------------------------------
+        # Tasas
+        # -------------------------------------------------
+
+        previous_aggregated["PREV_APPROVAL_RATE"] = (
+            previous_aggregated["PREV_APPROVED_COUNT"]
+            / previous_aggregated["PREV_APPLICATION_COUNT"]
+        )
+
+        previous_aggregated["PREV_REFUSAL_RATE"] = (
+            previous_aggregated["PREV_REFUSED_COUNT"]
+            / previous_aggregated["PREV_APPLICATION_COUNT"]
+        )
+
+        previous_aggregated["PREV_CANCELLATION_RATE"] = (
+            previous_aggregated["PREV_CANCELED_COUNT"]
+            / previous_aggregated["PREV_APPLICATION_COUNT"]
+        )
+
+        # -------------------------------------------------
+        # Join con application_train
+        # -------------------------------------------------
+
+        merged = application.merge(
+            previous_aggregated,
+            on="SK_ID_CURR",
+            how="left",
+            validate="one_to_one",
+        )
+
+        feature_columns = [
+            column for column in previous_aggregated.columns if column != "SK_ID_CURR"
+        ]
+
+        clients_with_history = int(merged["PREV_APPLICATION_COUNT"].notna().sum())
+
+        clients_without_history = int(merged["PREV_APPLICATION_COUNT"].isna().sum())
+
+        target_results = []
+
+        for target_value in sorted(merged[target_column].dropna().unique()):
+            target_data = merged.loc[merged[target_column] == target_value]
+
+            target_clients = len(target_data)
+
+            target_with_history = int(
+                target_data["PREV_APPLICATION_COUNT"].notna().sum()
+            )
+
+            feature_statistics = []
+
+            for column in feature_columns:
+                series = target_data[column].dropna()
+
+                if series.empty:
+                    continue
+
+                feature_statistics.append(
+                    {
+                        "feature": column,
+                        "count": int(series.count()),
+                        "mean": round(
+                            float(series.mean()),
+                            4,
+                        ),
+                        "median": round(
+                            float(series.median()),
+                            4,
+                        ),
+                        "p25": round(
+                            float(series.quantile(0.25)),
+                            4,
+                        ),
+                        "p75": round(
+                            float(series.quantile(0.75)),
+                            4,
+                        ),
+                        "min": round(
+                            float(series.min()),
+                            4,
+                        ),
+                        "max": round(
+                            float(series.max()),
+                            4,
+                        ),
+                    }
+                )
+
+            target_results.append(
+                {
+                    "target": int(target_value),
+                    "clients": int(target_clients),
+                    "clients_with_history": (target_with_history),
+                    "history_coverage_percentage": round(
+                        (
+                            (target_with_history / target_clients * 100)
+                            if target_clients
+                            else 0.0
+                        ),
+                        4,
+                    ),
+                    "features": (feature_statistics),
+                }
+            )
+
+        return {
+            "application_clients": int(len(application)),
+            "clients_with_history": (clients_with_history),
+            "clients_without_history": (clients_without_history),
+            "history_coverage_percentage": round(
+                (
+                    (clients_with_history / len(application) * 100)
+                    if len(application)
+                    else 0.0
+                ),
+                4,
+            ),
+            "aggregated_features": (feature_columns),
+            "target_statistics": (target_results),
+        }
