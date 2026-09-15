@@ -1,71 +1,46 @@
 from pathlib import Path
 
-from npl_portfolio.analytics.duckdb_historical_service import (
-    DuckDBHistoricalService,
+from npl_portfolio.analytics.historical.pos_cash_service import (
+    POSCashService,
+)
+
+BASE_DIR = Path(__file__).resolve().parents[1]
+
+POS_CASH_PATH = (
+    BASE_DIR / "data" / "processed" / "home_credit" / "POS_CASH_balance.parquet"
+)
+
+APPLICATION_PATH = (
+    BASE_DIR / "data" / "processed" / "home_credit" / "application_train.parquet"
 )
 
 
 def main() -> None:
-    project_root = (
-        Path(__file__)
-        .resolve()
-        .parents[1]
+    service = POSCashService(
+        parquet_path=POS_CASH_PATH,
     )
 
-    data_path = (
-        project_root
-        / "data"
-        / "processed"
-        / "home_credit"
-    )
-
-    pos_path = (
-        data_path
-        / "POS_CASH_balance.parquet"
-    )
-
-    application_path = (
-        data_path
-        / "application_train.parquet"
-    )
-
-    service = DuckDBHistoricalService(
-        parquet_path=pos_path
-    )
-
-    analysis = (
-        service.get_pos_cash_target_analysis(
-            application_path=application_path
-        )
+    analysis = service.get_pos_cash_target_analysis(
+        application_path=APPLICATION_PATH,
     )
 
     print()
-    print(
-        "HOME CREDIT - POS CASH VS TARGET"
-    )
+    print("=" * 90)
+    print("HOME CREDIT - POS CASH VS TARGET")
     print("=" * 90)
 
     print()
     print("COBERTURA DE HISTORIAL")
     print("-" * 90)
 
-    print(
-        f"Clientes application_train: "
-        f"{analysis['application_clients']:,}"
-    )
+    print("Clientes application_train: " f"{analysis['application_clients']:,}")
+
+    print("Con historial POS:          " f"{analysis['clients_with_history']:,}")
+
+    print("Sin historial POS:          " f"{analysis['clients_without_history']:,}")
 
     print(
-        f"Con historial POS:          "
-        f"{analysis['clients_with_history']:,}"
-    )
-
-    print(
-        f"Sin historial POS:          "
-        f"{analysis['clients_without_history']:,}"
-    )
-
-    print(
-        f"Cobertura:                   "
+        "Cobertura:                   "
         f"{analysis['history_coverage_percentage']:.2f}%"
     )
 
@@ -73,88 +48,43 @@ def main() -> None:
     print("FEATURES AGREGADAS")
     print("-" * 90)
 
-    for feature in analysis[
-        "aggregated_features"
-    ]:
-        print(
-            f"  - {feature}"
-        )
+    for feature in analysis["aggregated_features"]:
+        print(f"  - {feature}")
 
     print()
     print("POS CASH VS TARGET")
     print("-" * 90)
 
-    for target_data in analysis[
-        "target_statistics"
-    ]:
+    for target_result in analysis["target_statistics"]:
         print()
-        print(
-            f"TARGET = "
-            f"{target_data['target']}"
-        )
+        print(f"TARGET = {target_result['target']}")
+
+        print("Clientes:             " f"{target_result['clients']:,}")
+
+        print("Con historial POS:    " f"{target_result['clients_with_history']:,}")
 
         print(
-            f"Clientes:             "
-            f"{target_data['clients']:,}"
+            "Cobertura historial:  "
+            f"{target_result['history_coverage_percentage']:.2f}%"
         )
 
-        print(
-            f"Con historial POS:     "
-            f"{target_data['clients_with_history']:,}"
-        )
-
-        print(
-            f"Cobertura historial:   "
-            f"{target_data['history_coverage_percentage']:.2f}%"
-        )
-
-        print()
-
-        for feature in target_data[
-            "features"
-        ]:
-            print(
-                f"  {feature['feature']}"
-            )
-
-            print(
-                f"    Registros: "
-                f"{feature['count']:,}"
-            )
-
-            print(
-                f"    Media:     "
-                f"{feature['mean']:,.4f}"
-            )
-
-            print(
-                f"    Mediana:   "
-                f"{feature['median']:,.4f}"
-            )
-
-            print(
-                f"    P25:       "
-                f"{feature['p25']:,.4f}"
-            )
-
-            print(
-                f"    P75:       "
-                f"{feature['p75']:,.4f}"
-            )
-
-            print(
-                f"    Mínimo:    "
-                f"{feature['min']:,.4f}"
-            )
-
-            print(
-                f"    Máximo:    "
-                f"{feature['max']:,.4f}"
-            )
-
+        for feature in target_result["features"]:
             print()
+            print(f"  {feature['feature']}")
 
-    print("=" * 90)
+            print("    Registros: " f"{feature['count']:,}")
+
+            print("    Media:     " f"{feature['mean']:,.4f}")
+
+            print("    Mediana:   " f"{feature['median']:,.4f}")
+
+            print("    P25:       " f"{feature['p25']:,.4f}")
+
+            print("    P75:       " f"{feature['p75']:,.4f}")
+
+            print("    Mínimo:    " f"{feature['min']:,.4f}")
+
+            print("    Máximo:    " f"{feature['max']:,.4f}")
 
 
 if __name__ == "__main__":
