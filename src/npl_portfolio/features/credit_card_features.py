@@ -1,10 +1,12 @@
 from pathlib import Path
 
-import duckdb
 import pandas as pd
 
+from npl_portfolio.core.duckdb_manager import DuckDBManager
+from npl_portfolio.features.base_feature_builder import BaseDuckDBFeatureBuilder
 
-class CreditCardFeatureBuilder:
+
+class CreditCardFeatureBuilder(BaseDuckDBFeatureBuilder):
     """
     Construye features de credit_card_balance a nivel cliente.
 
@@ -21,14 +23,8 @@ class CreditCardFeatureBuilder:
                 f"No existe el archivo: {self.parquet_path}"
             )
 
-    def build(self) -> pd.DataFrame:
-        """
-        Construye las features históricas de tarjetas de crédito.
-        """
-        connection = duckdb.connect()
-
-        try:
-            query = """
+    def _get_query(self) -> str:
+        return """
                 WITH credit_card_aggregated AS (
                     SELECT
                         SK_ID_CURR,
@@ -174,12 +170,5 @@ class CreditCardFeatureBuilder:
                 ORDER BY SK_ID_CURR
             """
 
-            dataframe = connection.execute(
-                query,
-                [str(self.parquet_path)],
-            ).fetchdf()
-
-        finally:
-            connection.close()
-
-        return dataframe
+    def _get_parameters(self) -> list[str]:
+        return [str(self.parquet_path)]

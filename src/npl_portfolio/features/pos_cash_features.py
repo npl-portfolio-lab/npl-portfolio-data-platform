@@ -1,10 +1,12 @@
 from pathlib import Path
 
-import duckdb
 import pandas as pd
 
+from npl_portfolio.core.duckdb_manager import DuckDBManager
+from npl_portfolio.features.base_feature_builder import BaseDuckDBFeatureBuilder
 
-class POSCashFeatureBuilder:
+
+class POSCashFeatureBuilder(BaseDuckDBFeatureBuilder):
     """
     Construye features de POS_CASH_balance a nivel cliente.
 
@@ -21,19 +23,8 @@ class POSCashFeatureBuilder:
                 f"No existe el archivo: {self.parquet_path}"
             )
 
-    def build(self) -> pd.DataFrame:
-        """
-        Construye las features históricas de POS CASH.
-
-        Returns
-        -------
-        pd.DataFrame
-            DataFrame con una fila por SK_ID_CURR.
-        """
-        connection = duckdb.connect()
-
-        try:
-            query = """
+    def _get_query(self) -> str:
+        return """
                 WITH pos_aggregated AS (
                     SELECT
                         SK_ID_CURR,
@@ -130,12 +121,5 @@ class POSCashFeatureBuilder:
                 ORDER BY SK_ID_CURR
             """
 
-            dataframe = connection.execute(
-                query,
-                [str(self.parquet_path)],
-            ).fetchdf()
-
-        finally:
-            connection.close()
-
-        return dataframe
+    def _get_parameters(self) -> list[str]:
+        return [str(self.parquet_path)]

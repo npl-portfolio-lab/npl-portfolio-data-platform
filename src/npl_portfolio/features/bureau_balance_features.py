@@ -1,10 +1,12 @@
 from pathlib import Path
 
-import duckdb
 import pandas as pd
 
+from npl_portfolio.core.duckdb_manager import DuckDBManager
+from npl_portfolio.features.base_feature_builder import BaseDuckDBFeatureBuilder
 
-class BureauBalanceFeatureBuilder:
+
+class BureauBalanceFeatureBuilder(BaseDuckDBFeatureBuilder):
     """
     Construye features de bureau_balance a nivel cliente.
 
@@ -35,15 +37,8 @@ class BureauBalanceFeatureBuilder:
                 f"No existe el archivo: {self.bureau_path}"
             )
 
-    def build(self) -> pd.DataFrame:
-        """
-        Mapea bureau_balance hacia SK_ID_CURR mediante bureau
-        y construye una fila de features por cliente.
-        """
-        connection = duckdb.connect()
-
-        try:
-            query = """
+    def _get_query(self) -> str:
+        return """
                 WITH mapped_history AS (
                     SELECT
                         bureau.SK_ID_CURR,
@@ -226,15 +221,8 @@ class BureauBalanceFeatureBuilder:
                 ORDER BY SK_ID_CURR
             """
 
-            dataframe = connection.execute(
-                query,
-                [
-                    str(self.parquet_path),
-                    str(self.bureau_path),
-                ],
-            ).fetchdf()
-
-        finally:
-            connection.close()
-
-        return dataframe
+    def _get_parameters(self) -> list[str]:
+        return [
+            str(self.parquet_path),
+            str(self.bureau_path),
+        ]

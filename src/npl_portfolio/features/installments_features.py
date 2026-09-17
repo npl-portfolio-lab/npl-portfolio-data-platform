@@ -1,10 +1,12 @@
 from pathlib import Path
 
-import duckdb
 import pandas as pd
 
+from npl_portfolio.core.duckdb_manager import DuckDBManager
+from npl_portfolio.features.base_feature_builder import BaseDuckDBFeatureBuilder
 
-class InstallmentsFeatureBuilder:
+
+class InstallmentsFeatureBuilder(BaseDuckDBFeatureBuilder):
     """
     Construye features de installments_payments a nivel cliente.
 
@@ -21,28 +23,8 @@ class InstallmentsFeatureBuilder:
                 f"No existe el archivo: {self.parquet_path}"
             )
 
-    def build(self) -> pd.DataFrame:
-        """
-        Construye las features históricas de pagos.
-
-        PAYMENT_DELAY_DAYS:
-            DAYS_ENTRY_PAYMENT - DAYS_INSTALMENT
-
-            > 0  -> pago tardío
-            = 0  -> pago en fecha
-            < 0  -> pago anticipado
-
-        PAYMENT_DIFFERENCE:
-            AMT_INSTALMENT - AMT_PAYMENT
-
-            > 0  -> pago inferior al importe esperado
-            = 0  -> pago completo
-            < 0  -> pago superior al importe esperado
-        """
-        connection = duckdb.connect()
-
-        try:
-            query = """
+    def _get_query(self) -> str:
+        return """
                 WITH installments_enriched AS (
                     SELECT
                         SK_ID_CURR,
@@ -225,12 +207,5 @@ class InstallmentsFeatureBuilder:
                 ORDER BY SK_ID_CURR
             """
 
-            dataframe = connection.execute(
-                query,
-                [str(self.parquet_path)],
-            ).fetchdf()
-
-        finally:
-            connection.close()
-
-        return dataframe
+    def _get_parameters(self) -> list[str]:
+        return [str(self.parquet_path)]
