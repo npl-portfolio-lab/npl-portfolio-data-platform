@@ -1,8 +1,13 @@
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
+
 from npl_portfolio.analytics.historical.duckdb_base_service import (
     DuckDBBaseService,
+)
+from npl_portfolio.features.bureau_balance_features import (
+    BureauBalanceFeatureBuilder,
 )
 
 
@@ -25,10 +30,34 @@ class BureauBalanceService(DuckDBBaseService):
                     v
         application_train.SK_ID_CURR
 
-    Los registros de bureau_balance sin correspondencia en bureau
-    se contabilizan explícitamente y no se consideran registros
-    mapeables a un cliente.
+    La construcción de features se delega a
+    BureauBalanceFeatureBuilder.
+
+    TARGET se incorpora únicamente después de construir
+    las features y se utiliza exclusivamente para análisis EDA.
     """
+
+    FEATURE_COLUMNS = [
+        "BB_RECORD_COUNT",
+        "BB_BUREAU_CREDIT_COUNT",
+        "BB_OLDEST_MONTH",
+        "BB_RECENT_MONTH",
+        "BB_STATUS_0_COUNT",
+        "BB_STATUS_1_COUNT",
+        "BB_STATUS_2_COUNT",
+        "BB_STATUS_3_COUNT",
+        "BB_STATUS_4_COUNT",
+        "BB_STATUS_5_COUNT",
+        "BB_STATUS_C_COUNT",
+        "BB_STATUS_X_COUNT",
+        "BB_DPD_RECORD_COUNT",
+        "BB_SEVERE_DPD_RECORD_COUNT",
+        "BB_MAX_STATUS_LEVEL",
+        "BB_DPD_RATE",
+        "BB_SEVERE_DPD_RATE",
+        "BB_CLOSED_STATUS_RATE",
+        "BB_UNKNOWN_STATUS_RATE",
+    ]
 
     def get_mapping_diagnostics(
         self,
@@ -98,13 +127,13 @@ class BureauBalanceService(DuckDBBaseService):
             "total_rows": total_rows,
             "mapped_rows": mapped_rows,
             "unmapped_rows": unmapped_rows,
-            "unmapped_bureau_ids": (unmapped_bureau_ids),
+            "unmapped_bureau_ids": unmapped_bureau_ids,
             "mapped_percentage": round(
-                (mapped_rows / total_rows * 100) if total_rows else 0.0,
+                (mapped_rows / total_rows * 100 if total_rows else 0.0),
                 4,
             ),
             "unmapped_percentage": round(
-                (unmapped_rows / total_rows * 100) if total_rows else 0.0,
+                (unmapped_rows / total_rows * 100 if total_rows else 0.0),
                 4,
             ),
         }
@@ -116,14 +145,9 @@ class BureauBalanceService(DuckDBBaseService):
         target_column: str = "TARGET",
     ) -> dict[str, Any]:
         """
-        Mapea bureau_balance hacia SK_ID_CURR mediante bureau,
-        agrega el historial mensual por cliente y posteriormente
-        incorpora TARGET.
-
-        Los STATUS 1-5 se tratan como estados numéricos de
-        morosidad para construir métricas descriptivas.
-
-        STATUS C y X se conservan como categorías independientes.
+        Construye las features de bureau_balance sin TARGET
+        y posteriormente analiza su distribución entre las
+        clases de la variable objetivo.
         """
         if not bureau_path.exists():
             raise FileNotFoundError(f"No existe el archivo: {bureau_path}")
@@ -135,260 +159,36 @@ class BureauBalanceService(DuckDBBaseService):
             bureau_path=bureau_path,
         )
 
-        connection = self._get_connection()
+        feature_builder = BureauBalanceFeatureBuilder(
+            parquet_path=self.parquet_path,
+            bureau_path=bureau_path,
+        )
 
-        try:
-            query = f"""
-                WITH mapped_history AS (
-                    SELECT
-                        bureau.SK_ID_CURR,
-                        bureau_balance.SK_ID_BUREAU,
-                        bureau_balance.MONTHS_BALANCE,
-                        bureau_balance.STATUS
+        features = feature_builder.build()
 
-                    FROM read_parquet(?) AS bureau_balance
+        application = pd.read_parquet(
+            application_path,
+            columns=[
+                "SK_ID_CURR",
+                target_column,
+            ],
+        )
 
-                    INNER JOIN read_parquet(?) AS bureau
-                        ON bureau_balance.SK_ID_BUREAU
-                        = bureau.SK_ID_BUREAU
-                ),
+        dataframe = application.merge(
+            features,
+            on="SK_ID_CURR",
+            how="left",
+            validate="one_to_one",
+            indicator="_BUREAU_BALANCE_MERGE",
+        )
 
-                bureau_balance_aggregated AS (
-                    SELECT
-                        SK_ID_CURR,
+        dataframe["HAS_BUREAU_BALANCE_HISTORY"] = (
+            dataframe["_BUREAU_BALANCE_MERGE"] == "both"
+        ).astype("int8")
 
-                        COUNT(*)
-                            AS BB_RECORD_COUNT,
-
-                        COUNT(
-                            DISTINCT SK_ID_BUREAU
-                        ) AS BB_BUREAU_CREDIT_COUNT,
-
-                        MIN(MONTHS_BALANCE)
-                            AS BB_OLDEST_MONTH,
-
-                        MAX(MONTHS_BALANCE)
-                            AS BB_RECENT_MONTH,
-
-                        SUM(
-                            CASE
-                                WHEN STATUS = '0'
-                                THEN 1
-                                ELSE 0
-                            END
-                        ) AS BB_STATUS_0_COUNT,
-
-                        SUM(
-                            CASE
-                                WHEN STATUS = '1'
-                                THEN 1
-                                ELSE 0
-                            END
-                        ) AS BB_STATUS_1_COUNT,
-
-                        SUM(
-                            CASE
-                                WHEN STATUS = '2'
-                                THEN 1
-                                ELSE 0
-                            END
-                        ) AS BB_STATUS_2_COUNT,
-
-                        SUM(
-                            CASE
-                                WHEN STATUS = '3'
-                                THEN 1
-                                ELSE 0
-                            END
-                        ) AS BB_STATUS_3_COUNT,
-
-                        SUM(
-                            CASE
-                                WHEN STATUS = '4'
-                                THEN 1
-                                ELSE 0
-                            END
-                        ) AS BB_STATUS_4_COUNT,
-
-                        SUM(
-                            CASE
-                                WHEN STATUS = '5'
-                                THEN 1
-                                ELSE 0
-                            END
-                        ) AS BB_STATUS_5_COUNT,
-
-                        SUM(
-                            CASE
-                                WHEN STATUS = 'C'
-                                THEN 1
-                                ELSE 0
-                            END
-                        ) AS BB_STATUS_C_COUNT,
-
-                        SUM(
-                            CASE
-                                WHEN STATUS = 'X'
-                                THEN 1
-                                ELSE 0
-                            END
-                        ) AS BB_STATUS_X_COUNT,
-
-                        SUM(
-                            CASE
-                                WHEN STATUS IN (
-                                    '1',
-                                    '2',
-                                    '3',
-                                    '4',
-                                    '5'
-                                )
-                                THEN 1
-                                ELSE 0
-                            END
-                        ) AS BB_DPD_RECORD_COUNT,
-
-                        SUM(
-                            CASE
-                                WHEN STATUS IN (
-                                    '3',
-                                    '4',
-                                    '5'
-                                )
-                                THEN 1
-                                ELSE 0
-                            END
-                        ) AS BB_SEVERE_DPD_RECORD_COUNT,
-
-                        MAX(
-                            CASE
-                                WHEN STATUS IN (
-                                    '0',
-                                    '1',
-                                    '2',
-                                    '3',
-                                    '4',
-                                    '5'
-                                )
-                                THEN CAST(
-                                    STATUS AS INTEGER
-                                )
-                                ELSE NULL
-                            END
-                        ) AS BB_MAX_STATUS_LEVEL
-
-                    FROM mapped_history
-
-                    GROUP BY SK_ID_CURR
-                ),
-
-                application AS (
-                    SELECT
-                        SK_ID_CURR,
-                        {target_column}
-
-                    FROM read_parquet(?)
-                ),
-
-                merged AS (
-                    SELECT
-                        application.SK_ID_CURR,
-                        application.{target_column},
-
-                        bureau_balance_aggregated.* EXCLUDE (
-                            SK_ID_CURR
-                        ),
-
-                        CASE
-                            WHEN bureau_balance_aggregated.SK_ID_CURR
-                                IS NOT NULL
-                            THEN 1
-                            ELSE 0
-                        END AS HAS_BUREAU_BALANCE_HISTORY
-
-                    FROM application
-
-                    LEFT JOIN bureau_balance_aggregated
-                        ON application.SK_ID_CURR
-                        = bureau_balance_aggregated.SK_ID_CURR
-                ),
-
-                features AS (
-                    SELECT
-                        *,
-
-                        CASE
-                            WHEN BB_RECORD_COUNT > 0
-                            THEN
-                                BB_DPD_RECORD_COUNT
-                                * 1.0
-                                / BB_RECORD_COUNT
-                        END AS BB_DPD_RATE,
-
-                        CASE
-                            WHEN BB_RECORD_COUNT > 0
-                            THEN
-                                BB_SEVERE_DPD_RECORD_COUNT
-                                * 1.0
-                                / BB_RECORD_COUNT
-                        END AS BB_SEVERE_DPD_RATE,
-
-                        CASE
-                            WHEN BB_RECORD_COUNT > 0
-                            THEN
-                                BB_STATUS_C_COUNT
-                                * 1.0
-                                / BB_RECORD_COUNT
-                        END AS BB_CLOSED_STATUS_RATE,
-
-                        CASE
-                            WHEN BB_RECORD_COUNT > 0
-                            THEN
-                                BB_STATUS_X_COUNT
-                                * 1.0
-                                / BB_RECORD_COUNT
-                        END AS BB_UNKNOWN_STATUS_RATE
-
-                    FROM merged
-                )
-
-                SELECT *
-                FROM features
-            """
-
-            dataframe = connection.execute(
-                query,
-                [
-                    str(self.parquet_path),
-                    str(bureau_path),
-                    str(application_path),
-                ],
-            ).fetchdf()
-
-        finally:
-            connection.close()
-
-        feature_columns = [
-            "BB_RECORD_COUNT",
-            "BB_BUREAU_CREDIT_COUNT",
-            "BB_OLDEST_MONTH",
-            "BB_RECENT_MONTH",
-            "BB_STATUS_0_COUNT",
-            "BB_STATUS_1_COUNT",
-            "BB_STATUS_2_COUNT",
-            "BB_STATUS_3_COUNT",
-            "BB_STATUS_4_COUNT",
-            "BB_STATUS_5_COUNT",
-            "BB_STATUS_C_COUNT",
-            "BB_STATUS_X_COUNT",
-            "BB_DPD_RECORD_COUNT",
-            "BB_SEVERE_DPD_RECORD_COUNT",
-            "BB_MAX_STATUS_LEVEL",
-            "BB_DPD_RATE",
-            "BB_SEVERE_DPD_RATE",
-            "BB_CLOSED_STATUS_RATE",
-            "BB_UNKNOWN_STATUS_RATE",
-        ]
+        dataframe = dataframe.drop(
+            columns="_BUREAU_BALANCE_MERGE",
+        )
 
         clients_with_history = int(dataframe["HAS_BUREAU_BALANCE_HISTORY"].sum())
 
@@ -407,7 +207,7 @@ class BureauBalanceService(DuckDBBaseService):
 
             feature_statistics = []
 
-            for column in feature_columns:
+            for column in self.FEATURE_COLUMNS:
                 series = target_data[column].dropna()
 
                 if series.empty:
@@ -451,13 +251,13 @@ class BureauBalanceService(DuckDBBaseService):
                     "clients_with_history": (target_with_history),
                     "history_coverage_percentage": round(
                         (
-                            (target_with_history / target_clients * 100)
+                            target_with_history / target_clients * 100
                             if target_clients
                             else 0.0
                         ),
                         4,
                     ),
-                    "features": (feature_statistics),
+                    "features": feature_statistics,
                 }
             )
 
@@ -467,13 +267,13 @@ class BureauBalanceService(DuckDBBaseService):
             "clients_without_history": (clients_without_history),
             "history_coverage_percentage": round(
                 (
-                    (clients_with_history / len(dataframe) * 100)
+                    clients_with_history / len(dataframe) * 100
                     if len(dataframe)
                     else 0.0
                 ),
                 4,
             ),
             "mapping_diagnostics": (mapping_diagnostics),
-            "aggregated_features": (feature_columns),
+            "aggregated_features": (self.FEATURE_COLUMNS.copy()),
             "target_statistics": (target_results),
         }
