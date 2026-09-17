@@ -1,8 +1,13 @@
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
+
 from npl_portfolio.analytics.historical.duckdb_base_service import (
     DuckDBBaseService,
+)
+from npl_portfolio.features.pos_cash_features import (
+    POSCashFeatureBuilder,
 )
 
 
@@ -11,9 +16,31 @@ class POSCashService(DuckDBBaseService):
     Servicio especializado para el análisis de POS_CASH_balance.
 
     Hereda las operaciones descriptivas generales de
-    DuckDBBaseService e incorpora las agregaciones específicas
-    del historial POS por cliente.
+    DuckDBBaseService.
+
+    La construcción de features históricas se delega a
+    POSCashFeatureBuilder. Este servicio únicamente incorpora
+    la variable objetivo para realizar análisis EDA.
     """
+
+    FEATURE_COLUMNS = [
+        "POS_RECORD_COUNT",
+        "POS_CONTRACT_COUNT",
+        "POS_ACTIVE_RECORD_COUNT",
+        "POS_COMPLETED_RECORD_COUNT",
+        "POS_DPD_RECORD_COUNT",
+        "POS_DPD_DEF_RECORD_COUNT",
+        "POS_MAX_DPD",
+        "POS_AVG_DPD",
+        "POS_MAX_DPD_DEF",
+        "POS_AVG_DPD_DEF",
+        "POS_AVG_INSTALMENT",
+        "POS_AVG_INSTALMENT_FUTURE",
+        "POS_OLDEST_MONTH",
+        "POS_RECENT_MONTH",
+        "POS_DPD_RATE",
+        "POS_DPD_DEF_RATE",
+    ]
 
     def get_pos_cash_target_analysis(
         self,
@@ -21,177 +48,42 @@ class POSCashService(DuckDBBaseService):
         target_column: str = "TARGET",
     ) -> dict[str, Any]:
         """
-        Agrega POS_CASH_balance por cliente mediante DuckDB
-        y compara las métricas resultantes entre TARGET=0
-        y TARGET=1.
-
-        TARGET se incorpora únicamente después de agregar
-        el historial.
+        Construye las features POS independientemente de TARGET
+        y posteriormente analiza su distribución entre las clases
+        de la variable objetivo.
         """
         if not application_path.exists():
             raise FileNotFoundError(f"No existe el archivo: {application_path}")
 
-        connection = self._get_connection()
+        feature_builder = POSCashFeatureBuilder(
+            parquet_path=self.parquet_path,
+        )
 
-        try:
-            query = f"""
-                WITH pos_aggregated AS (
-                    SELECT
-                        SK_ID_CURR,
+        features = feature_builder.build()
 
-                        COUNT(*) AS POS_RECORD_COUNT,
+        application = pd.read_parquet(
+            application_path,
+            columns=[
+                "SK_ID_CURR",
+                target_column,
+            ],
+        )
 
-                        COUNT(
-                            DISTINCT SK_ID_PREV
-                        ) AS POS_CONTRACT_COUNT,
+        dataframe = application.merge(
+            features,
+            on="SK_ID_CURR",
+            how="left",
+            validate="one_to_one",
+            indicator="_POS_MERGE",
+        )
 
-                        SUM(
-                            CASE
-                                WHEN NAME_CONTRACT_STATUS = 'Active'
-                                THEN 1
-                                ELSE 0
-                            END
-                        ) AS POS_ACTIVE_RECORD_COUNT,
+        dataframe["HAS_POS_HISTORY"] = (dataframe["_POS_MERGE"] == "both").astype(
+            "int8"
+        )
 
-                        SUM(
-                            CASE
-                                WHEN NAME_CONTRACT_STATUS = 'Completed'
-                                THEN 1
-                                ELSE 0
-                            END
-                        ) AS POS_COMPLETED_RECORD_COUNT,
-
-                        SUM(
-                            CASE
-                                WHEN SK_DPD > 0
-                                THEN 1
-                                ELSE 0
-                            END
-                        ) AS POS_DPD_RECORD_COUNT,
-
-                        SUM(
-                            CASE
-                                WHEN SK_DPD_DEF > 0
-                                THEN 1
-                                ELSE 0
-                            END
-                        ) AS POS_DPD_DEF_RECORD_COUNT,
-
-                        MAX(SK_DPD)
-                            AS POS_MAX_DPD,
-
-                        AVG(SK_DPD)
-                            AS POS_AVG_DPD,
-
-                        MAX(SK_DPD_DEF)
-                            AS POS_MAX_DPD_DEF,
-
-                        AVG(SK_DPD_DEF)
-                            AS POS_AVG_DPD_DEF,
-
-                        AVG(CNT_INSTALMENT)
-                            AS POS_AVG_INSTALMENT,
-
-                        AVG(CNT_INSTALMENT_FUTURE)
-                            AS POS_AVG_INSTALMENT_FUTURE,
-
-                        MIN(MONTHS_BALANCE)
-                            AS POS_OLDEST_MONTH,
-
-                        MAX(MONTHS_BALANCE)
-                            AS POS_RECENT_MONTH
-
-                    FROM read_parquet(?)
-
-                    GROUP BY SK_ID_CURR
-                ),
-
-                application AS (
-                    SELECT
-                        SK_ID_CURR,
-                        {target_column}
-                    FROM read_parquet(?)
-                ),
-
-                merged AS (
-                    SELECT
-                        application.SK_ID_CURR,
-                        application.{target_column},
-
-                        pos_aggregated.* EXCLUDE (
-                            SK_ID_CURR
-                        ),
-
-                        CASE
-                            WHEN pos_aggregated.SK_ID_CURR
-                                IS NOT NULL
-                            THEN 1
-                            ELSE 0
-                        END AS HAS_POS_HISTORY
-
-                    FROM application
-
-                    LEFT JOIN pos_aggregated
-                        ON application.SK_ID_CURR
-                        = pos_aggregated.SK_ID_CURR
-                ),
-
-                features AS (
-                    SELECT
-                        *,
-
-                        CASE
-                            WHEN POS_RECORD_COUNT > 0
-                            THEN
-                                POS_DPD_RECORD_COUNT
-                                * 1.0
-                                / POS_RECORD_COUNT
-                        END AS POS_DPD_RATE,
-
-                        CASE
-                            WHEN POS_RECORD_COUNT > 0
-                            THEN
-                                POS_DPD_DEF_RECORD_COUNT
-                                * 1.0
-                                / POS_RECORD_COUNT
-                        END AS POS_DPD_DEF_RATE
-
-                    FROM merged
-                )
-
-                SELECT *
-                FROM features
-            """
-
-            dataframe = connection.execute(
-                query,
-                [
-                    str(self.parquet_path),
-                    str(application_path),
-                ],
-            ).fetchdf()
-
-        finally:
-            connection.close()
-
-        feature_columns = [
-            "POS_RECORD_COUNT",
-            "POS_CONTRACT_COUNT",
-            "POS_ACTIVE_RECORD_COUNT",
-            "POS_COMPLETED_RECORD_COUNT",
-            "POS_DPD_RECORD_COUNT",
-            "POS_DPD_DEF_RECORD_COUNT",
-            "POS_MAX_DPD",
-            "POS_AVG_DPD",
-            "POS_MAX_DPD_DEF",
-            "POS_AVG_DPD_DEF",
-            "POS_AVG_INSTALMENT",
-            "POS_AVG_INSTALMENT_FUTURE",
-            "POS_OLDEST_MONTH",
-            "POS_RECENT_MONTH",
-            "POS_DPD_RATE",
-            "POS_DPD_DEF_RATE",
-        ]
+        dataframe = dataframe.drop(
+            columns="_POS_MERGE",
+        )
 
         clients_with_history = int(dataframe["HAS_POS_HISTORY"].sum())
 
@@ -210,7 +102,7 @@ class POSCashService(DuckDBBaseService):
 
             feature_statistics = []
 
-            for column in feature_columns:
+            for column in self.FEATURE_COLUMNS:
                 series = target_data[column].dropna()
 
                 if series.empty:
@@ -254,7 +146,7 @@ class POSCashService(DuckDBBaseService):
                     "clients_with_history": (target_with_history),
                     "history_coverage_percentage": round(
                         (
-                            (target_with_history / target_clients * 100)
+                            target_with_history / target_clients * 100
                             if target_clients
                             else 0.0
                         ),
@@ -270,12 +162,12 @@ class POSCashService(DuckDBBaseService):
             "clients_without_history": int(clients_without_history),
             "history_coverage_percentage": round(
                 (
-                    (clients_with_history / len(dataframe) * 100)
+                    clients_with_history / len(dataframe) * 100
                     if len(dataframe)
                     else 0.0
                 ),
                 4,
             ),
-            "aggregated_features": feature_columns,
+            "aggregated_features": (self.FEATURE_COLUMNS.copy()),
             "target_statistics": target_results,
         }
