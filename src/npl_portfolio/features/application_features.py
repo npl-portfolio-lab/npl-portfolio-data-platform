@@ -1,21 +1,28 @@
 from pathlib import Path
 
-import numpy as np
-import pandas as pd
+from npl_portfolio.core.duckdb_manager import DuckDBManager
+from npl_portfolio.features.base_feature_builder import (
+    BaseDuckDBFeatureBuilder,
+)
 
 
-class ApplicationFeatureBuilder:
+class ApplicationFeatureBuilder(BaseDuckDBFeatureBuilder):
     """
     Construye features determinísticas de application_train
     y application_test.
 
-    Reglas:
-    - Una fila por SK_ID_CURR.
-    - TARGET nunca forma parte de las features.
-    - DAYS_EMPLOYED=365243 se trata como valor sentinel.
-    - No se realiza imputación aprendida.
-    - No se realiza encoding aprendido.
-    - No se utiliza información de TARGET.
+    Responsabilidad:
+    - Preservar una fila por SK_ID_CURR.
+    - Excluir TARGET de las features.
+    - Tratar DAYS_EMPLOYED=365243 como sentinel.
+    - Crear variables determinísticas de aplicación.
+    - No realizar imputación aprendida.
+    - No realizar encoding aprendido.
+    - No utilizar información de TARGET.
+
+    Para producción puede escribir directamente a Parquet
+    mediante build_to_parquet(), evitando materializar
+    el dataset completo en Pandas.
     """
 
     DAYS_EMPLOYED_SENTINEL = 365243
@@ -47,121 +54,103 @@ class ApplicationFeatureBuilder:
         self.parquet_path = parquet_path
 
         if not self.parquet_path.exists():
-            raise FileNotFoundError(
-                f"No existe el archivo: {self.parquet_path}"
-            )
+            raise FileNotFoundError(f"No existe el archivo: {self.parquet_path}")
 
-    @staticmethod
-    def _safe_divide(
-        numerator: pd.Series,
-        denominator: pd.Series,
-    ) -> pd.Series:
-        """
-        División segura.
+        self._validate_schema()
 
-        Denominadores cero se convierten en NaN y cualquier
-        infinito resultante se reemplaza por NaN.
-        """
-        safe_denominator = denominator.replace(
-            0,
-            np.nan,
-        )
+    def _get_schema_columns(self) -> list[str]:
+        connection = DuckDBManager().connect()
 
-        result = numerator / safe_denominator
+        try:
+            rows = connection.execute(
+                """
+                DESCRIBE
+                SELECT *
+                FROM read_parquet(?)
+                """,
+                [str(self.parquet_path.resolve())],
+            ).fetchall()
 
-        return result.replace(
-            [np.inf, -np.inf],
-            np.nan,
-        )
+            return [row[0] for row in rows]
 
-    def build(self) -> pd.DataFrame:
-        application = pd.read_parquet(
-            self.parquet_path,
-        )
+        finally:
+            connection.close()
+
+    def _validate_schema(self) -> None:
+        columns = self._get_schema_columns()
 
         missing_columns = [
-            column
-            for column in self.REQUIRED_COLUMNS
-            if column not in application.columns
+            column for column in self.REQUIRED_COLUMNS if column not in columns
         ]
 
         if missing_columns:
-            raise ValueError(
-                "Faltan columnas requeridas: "
-                f"{missing_columns}"
-            )
+            raise ValueError("Faltan columnas requeridas: " f"{missing_columns}")
 
-        if not application["SK_ID_CURR"].is_unique:
-            raise ValueError(
-                "SK_ID_CURR contiene duplicados en application."
-            )
+        self.has_target = "TARGET" in columns
 
-        # TARGET nunca debe formar parte del dataset
-        # generado por Feature Engineering.
-        if "TARGET" in application.columns:
-            application = application.drop(
-                columns=["TARGET"]
-            )
+    def _get_parameters(self) -> list[str]:
+        return [
+            str(self.parquet_path.resolve()),
+        ]
 
-        # --------------------------------------------------
-        # Sentinel DAYS_EMPLOYED
-        # --------------------------------------------------
+    def _get_query(self) -> str:
+        if self.has_target:
+            base_columns = "* EXCLUDE (TARGET, DAYS_EMPLOYED)"
+        else:
+            base_columns = "* EXCLUDE (DAYS_EMPLOYED)"
 
-        application["DAYS_EMPLOYED_ANOMALY"] = (
-            application["DAYS_EMPLOYED"]
-            .eq(self.DAYS_EMPLOYED_SENTINEL)
-            .astype("int8")
-        )
+        return f"""
+            SELECT
+                {base_columns},
 
-        application.loc[
-            application["DAYS_EMPLOYED"].eq(
-                self.DAYS_EMPLOYED_SENTINEL
-            ),
-            "DAYS_EMPLOYED",
-        ] = np.nan
+                CASE
+                    WHEN DAYS_EMPLOYED = {self.DAYS_EMPLOYED_SENTINEL}
+                        THEN NULL
+                    ELSE DAYS_EMPLOYED
+                END AS DAYS_EMPLOYED,
 
-        # --------------------------------------------------
-        # Variables temporales
-        # --------------------------------------------------
+                CASE
+                    WHEN DAYS_EMPLOYED = {self.DAYS_EMPLOYED_SENTINEL}
+                        THEN 1
+                    ELSE 0
+                END AS DAYS_EMPLOYED_ANOMALY,
 
-        application["AGE_YEARS"] = (
-            -application["DAYS_BIRTH"] / 365.25
-        )
+                -DAYS_BIRTH / 365.25
+                    AS AGE_YEARS,
 
-        application["EMPLOYMENT_YEARS"] = (
-            -application["DAYS_EMPLOYED"] / 365.25
-        )
+                CASE
+                    WHEN DAYS_EMPLOYED = {self.DAYS_EMPLOYED_SENTINEL}
+                        THEN NULL
+                    ELSE -DAYS_EMPLOYED / 365.25
+                END AS EMPLOYMENT_YEARS,
 
-        # --------------------------------------------------
-        # Ratios financieros
-        # --------------------------------------------------
+                CASE
+                    WHEN AMT_INCOME_TOTAL IS NULL
+                      OR AMT_INCOME_TOTAL = 0
+                        THEN NULL
+                    ELSE AMT_CREDIT / AMT_INCOME_TOTAL
+                END AS CREDIT_INCOME_RATIO,
 
-        application["CREDIT_INCOME_RATIO"] = (
-            self._safe_divide(
-                application["AMT_CREDIT"],
-                application["AMT_INCOME_TOTAL"],
-            )
-        )
+                CASE
+                    WHEN AMT_INCOME_TOTAL IS NULL
+                      OR AMT_INCOME_TOTAL = 0
+                        THEN NULL
+                    ELSE AMT_ANNUITY / AMT_INCOME_TOTAL
+                END AS ANNUITY_INCOME_RATIO,
 
-        application["ANNUITY_INCOME_RATIO"] = (
-            self._safe_divide(
-                application["AMT_ANNUITY"],
-                application["AMT_INCOME_TOTAL"],
-            )
-        )
+                CASE
+                    WHEN AMT_ANNUITY IS NULL
+                      OR AMT_ANNUITY = 0
+                        THEN NULL
+                    ELSE AMT_CREDIT / AMT_ANNUITY
+                END AS CREDIT_ANNUITY_RATIO,
 
-        application["CREDIT_ANNUITY_RATIO"] = (
-            self._safe_divide(
-                application["AMT_CREDIT"],
-                application["AMT_ANNUITY"],
-            )
-        )
+                CASE
+                    WHEN AMT_CREDIT IS NULL
+                      OR AMT_CREDIT = 0
+                        THEN NULL
+                    ELSE AMT_GOODS_PRICE / AMT_CREDIT
+                END AS GOODS_CREDIT_RATIO
 
-        application["GOODS_CREDIT_RATIO"] = (
-            self._safe_divide(
-                application["AMT_GOODS_PRICE"],
-                application["AMT_CREDIT"],
-            )
-        )
-
-        return application
+            FROM read_parquet(?)
+        """

@@ -28,10 +28,20 @@ class BaseDuckDBFeatureBuilder:
         connection = DuckDBManager().connect()
 
         try:
-            return connection.execute(
+            result = connection.execute(
                 self._get_query(),
                 self._get_parameters(),
             ).fetchdf()
+
+            nullable_integer_columns = result.select_dtypes(
+                include=["Int8", "Int16", "Int32", "Int64"]
+            ).columns
+
+            for column in nullable_integer_columns:
+                if result[column].isna().any():
+                    result[column] = result[column].astype("float64")
+
+            return result
 
         finally:
             connection.close()
@@ -47,18 +57,13 @@ class BaseDuckDBFeatureBuilder:
         )
 
         if output_path.exists() and not overwrite:
-            print(
-                f"[CHECKPOINT] {output_path.name} "
-                "ya existe. Se omite."
-            )
+            print(f"[CHECKPOINT] {output_path.name} " "ya existe. Se omite.")
             return output_path
 
         connection = DuckDBManager().connect()
 
         try:
-            escaped_output = str(
-                output_path.resolve()
-            ).replace("'", "''")
+            escaped_output = str(output_path.resolve()).replace("'", "''")
 
             query = self._get_query()
 
@@ -73,10 +78,7 @@ class BaseDuckDBFeatureBuilder:
                 )
             """
 
-            print(
-                f"[OUT-OF-CORE] Generando "
-                f"{output_path.name}..."
-            )
+            print(f"[OUT-OF-CORE] Generando " f"{output_path.name}...")
 
             connection.execute(
                 copy_query,
@@ -86,9 +88,6 @@ class BaseDuckDBFeatureBuilder:
         finally:
             connection.close()
 
-        print(
-            f"[OK] Checkpoint creado: "
-            f"{output_path}"
-        )
+        print(f"[OK] Checkpoint creado: " f"{output_path}")
 
         return output_path
