@@ -133,23 +133,34 @@ siempre que sea posible para permitir su reutilización desde pipelines,
 servicios, APIs y futuras interfaces.
 
 5. Estructura del proyecto
+
 npl-portfolio-data-platform/
 |
+├── config/                  # Configuraciones del proyecto
 ├── data/
 │   ├── raw/
 │   ├── interim/
 │   ├── processed/
-│   └── external/
+│   ├── external/
+│   └── artifacts/ml/        # Modelos y resultados de evaluación
 |
-├── docs/
-|
-├── notebooks/
+├── artifacts/               # Visualizaciones generadas
+├── docs/                    # Documentación técnica y resultados
+├── notebooks/               # Exploración y experimentación
 |
 ├── scripts/
+│   ├── ingestion/           # Descarga e ingesta de datos
+│   ├── data_quality/        # Perfilado y calidad
+│   ├── transformation/      # Transformación y verificaciones
+│   ├── eda/                 # Análisis exploratorio
+│   ├── features/            # Construcción y validación de features
+│   ├── ml/                  # Entrenamiento y evaluación ML
+│   ├── reporting/           # Informes y visualizaciones
+│   └── pipelines/           # Ejecución de pipelines
 |
 ├── src/
 │   └── npl_portfolio/
-│       ├── core/
+│       ├── core/            # Configuración y rutas centralizadas
 │       ├── domain/
 │       ├── ingestion/
 │       ├── profiling/
@@ -166,8 +177,15 @@ npl-portfolio-data-platform/
 │       └── simulation/
 |
 ├── tests/
-├── requirements.txt
+├── pyproject.toml
 └── README.md
+
+Las rutas principales del proyecto se centralizan en
+src/npl_portfolio/core/paths.py.
+
+Los scripts están agrupados por responsabilidad y pueden ejecutarse
+desde la raíz del repositorio utilizando su ruta correspondiente.
+
 6. Flujo de datos implementado
 
 Actualmente el pipeline principal sigue este flujo:
