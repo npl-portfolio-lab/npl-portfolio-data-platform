@@ -1,6 +1,7 @@
 from pathlib import Path
 from time import perf_counter
 import json
+import joblib
 import warnings
 
 from sklearn.exceptions import ConvergenceWarning
@@ -19,6 +20,7 @@ ARTIFACTS_DIR = ML_ARTIFACTS_DIR
 
 BALANCED_PATH = ARTIFACTS_DIR / "balanced_evaluation.json"
 OUTPUT_PATH = ARTIFACTS_DIR / "logistic_models_comparison.json"
+UNBALANCED_MODEL_PATH = ARTIFACTS_DIR / "unbalanced_logistic_regression.joblib"
 
 
 def main() -> None:
@@ -159,6 +161,17 @@ def main() -> None:
     }
 
     ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Guardar el modelo y el escalador utilizados en la Fase 9.6.
+    joblib.dump(
+        {
+            "model": model,
+            "scaler": scaler,
+        },
+        UNBALANCED_MODEL_PATH,
+    )
+
+    print(f"[OK] Modelo guardado: {UNBALANCED_MODEL_PATH}")
 
     with OUTPUT_PATH.open("w", encoding="utf-8") as file:
         json.dump(report, file, indent=2)
