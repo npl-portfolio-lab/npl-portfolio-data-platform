@@ -140,4 +140,6 @@ temp/
 # ------------------------------------------------------------
 # Local reports / generated outputs
 # ------------------------------------------------------------
-reports/generated/
+reports/generated//docs/ml/fase_10_*.json
+
+/docs/ml/fase_10_*.json
